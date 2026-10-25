@@ -6,8 +6,8 @@
 <div class="grid"><div class="field"><label>From date</label><input type="date" id="rangeStart" value="2026-10-05"></div><div class="field"><label>To date</label><input type="date" id="rangeEnd" value="2026-10-23"></div></div>
 <div class="filters" style="margin-top:15px"><button class="button selected" id="scanNews">Scan Forex Factory red events</button><button class="button" id="excludeFound">Exclude all found dates</button><button class="button" id="clearNews">Trade all dates in range</button></div>
 <div class="info" id="scanStatus" role="status">This is your private backtest. Scan the calendar for your selected range or import your own calendar. If the scan fails, no dates will be silently marked as safe.</div>
-<div class="field" style="margin-top:15px"><label>Import Forex Factory calendar (CSV, JSON or XML) · offline fallback</label><input id="newsImport" type="file" accept=".csv,.json,.xml,application/json,text/csv,application/xml,text/xml"><div class="sub" style="margin:6px 0 0">Import rows with date, currency, impact and title. Only explicit high-impact USD events are accepted; unknown impacts are not assumed red.</div></div>
-<div class="row" style="margin-top:19px"><div><h3>Excluded trading dates</h3><div class="sub" style="margin:2px 0">Tick a date to remove all its trades from every result.</div></div><span class="muted" id="newsSourceLabel" style="font-size:12px"></span></div>
+<div class="field" style="margin-top:15px"><label>Import Forex Factory calendar (CSV, JSON or XML) · offline fallback</label><input id="newsImport" type="file" multiple accept=".csv,.json,.xml,application/json,text/csv,application/xml,text/xml"><div class="sub" style="margin:6px 0 0">Select multiple weekly CSV, JSON or XML files together. Overlapping events are deduplicated and the calendar is saved in this browser. Only explicit USD high-impact events are accepted.</div></div>
+<div class="filters" style="margin-top:10px"><button class="button" id="clearSavedNews">Clear saved news calendar</button><span class="muted" id="savedNewsStatus" style="font-size:12px;align-self:center"></span></div><div class="row" style="margin-top:19px"><div><h3>Excluded trading dates</h3><div class="sub" style="margin:2px 0">Tick a date to remove all its trades from every result.</div></div><span class="muted" id="newsSourceLabel" style="font-size:12px"></span></div>
 <div class="newsgrid" id="newsList"></div><div class="grid results"><div class="metric"><small>Selected-period P&L</small><strong id="newsNet"></strong></div><div class="metric"><small>Trading sessions retained</small><strong id="newsDays"></strong></div></div><div class="info" id="newsAudit"></div></div><div class="row"><span></span><button class="button selected" data-goto="results">Review results →</button></div></section>
 <section id="tab-results" class="hidden"><div class="card"><div class="eyebrow">Net historical yield</div><h2>Results after your exclusions and contract settings</h2><div class="triple"><div class="metric"><small>Retained period net P&L</small><strong id="net"></strong></div><div class="metric"><small>Trade rows retained</small><strong id="count"></strong></div><div class="metric"><small>Largest recorded individual trade loss</small><strong id="worst"></strong></div></div><div class="info" id="resultContext"></div></div><div class="grid"><div class="card"><h3>Daily P&L (zero-centred)</h3><div id="dailyBars"></div></div><div class="card"><h3>Daily figures</h3><div class="tablewrap"><table><thead><tr><th>Date</th><th>Rows</th><th style="text-align:right">P&L</th></tr></thead><tbody id="daysBody"></tbody></table></div></div></div><div class="card"><div class="row"><h3>Retained trade records</h3><span class="muted" style="font-size:12px">News-excluded trades are absent</span></div><div class="tablewrap"><table><thead><tr><th>Entry</th><th>Direction</th><th>Qty</th><th>Exit price</th><th>Exit reason</th><th style="text-align:right">Net P&L</th></tr></thead><tbody id="tradesBody"></tbody></table></div></div><div class="row"><span></span><button class="button selected" data-goto="risk">Review account risk →</button></div></section>
 <section id="tab-risk" class="hidden"><div class="card"><div class="eyebrow">Loss-limit comparison</div><h2>Which Lucid account could withstand these recorded trades?</h2><div class="grid"><div class="field"><label>Account size · automatically updates contracts when enabled</label><select id="account"><option value="25000">$25,000 · MLL $1,000</option><option value="50000">$50,000 · MLL $2,000</option><option value="100000" selected>$100,000 · MLL $3,000</option><option value="150000">$150,000 · MLL $4,500</option></select></div><div class="field"><label>Starting usable drawdown ($)</label><input id="headroom" type="number" step="1" min="0" value="3000"></div></div><div class="info" id="accountSizingSummary"></div><div class="grid results"><div class="metric"><small>Worst estimated floating loss · open position</small><strong id="floatLoss" class="bad"></strong></div><div class="metric"><small>Worst floating loss · date / exit</small><strong id="floatWhen" style="font-size:18px"></strong></div></div><div class="info" id="floatDetail"></div><div class="status" id="breachBox" style="margin-top:16px"></div><div class="grid results"><div class="metric"><small>End-of-period realised P&L</small><strong id="riskNet"></strong></div><div class="metric"><small>First MLL threshold crossing · model</small><strong id="riskWhen" style="font-size:19px"></strong></div></div><div class="info warning">Floating loss is estimated from NT8 per-entry MAE at the group’s worst inferred price, not a timestamped account-equity series. The first floating crossing is a risk warning, not a confirmed Lucid liquidation timestamp; realised threshold crossings are definitive within this simplified closed-trade model. The full historical period is always retained.</div></div></section><div class="footer">Historical trade records are simulated. Fees reflect only the values recorded in NT8 (zero in the included datasets). Quantity variants assume the original prices/exits and cannot replace a new Strategy Analyzer run. No tool can guarantee zero modelling error or future profitability.</div></div><script>
@@ -147,11 +147,41 @@ function normalizeImported(events){
  }
  return rows;
 }
+const CALENDAR_KEY='quantflow_usd_red_calendar_v1';
+let calendarEvents=[];
+function calendarKey(e){return e.date+'|'+String(e.title||'').trim().toLowerCase().replace(/\\s+/g,' ');}
+function mergeCalendar(rows){
+ const map=new Map(calendarEvents.map(e=>[calendarKey(e),e]));
+ for(const r of rows){if(r.date&&r.title)map.set(calendarKey(r),{date:r.date,title:r.title});}
+ calendarEvents=[...map.values()].sort((a,b)=>a.date.localeCompare(b.date)||a.title.localeCompare(b.title));
+ try{localStorage.setItem(CALENDAR_KEY,JSON.stringify(calendarEvents));}
+ catch(e){statusNews('Imported successfully for this session, but browser storage is unavailable: '+e.message,true);}
+}
+function refreshCalendar(){
+ const dayMap=new Map();
+ for(const e of calendarEvents){
+  if(!dayMap.has(e.date))dayMap.set(e.date,new Set());
+  dayMap.get(e.date).add(e.title);
+ }
+ NEWS=[...dayMap].sort((a,b)=>a[0].localeCompare(b[0])).map(([d,names])=>[d,[...names].join(' · ')]);
+ $('savedNewsStatus').textContent=calendarEvents.length+' saved event(s) · '+NEWS.length+' date(s)';
+ showNews();rerender();
+}
 function applyNewsEvents(events,kind){
- let dates=new Map();for(const e of events){if(e.date<$('rangeStart').value||e.date>$('rangeEnd').value)continue;if(!dates.has(e.date))dates.set(e.date,[]);dates.get(e.date).push(e.title);}
- NEWS=[...dates].sort((a,b)=>a[0].localeCompare(b[0])).map(([d,t])=>[d,[...new Set(t)].join(' · ')]);
- picked=new Set(NEWS.map(n=>n[0]));sourceType=kind;showNews();rerender();
- statusNews(NEWS.length+' high-impact USD calendar date(s) found and excluded by default. Review the checkboxes before using the results. Source: '+(kind==='scan'?'Forex Factory live retrieval':'imported file')+'. Dates are interpreted as the calendar source’s displayed dates; align your NT8 session dates and time zone.');
+ if(!Array.isArray(events))throw Error('Invalid event list');
+ if(events.length===0)throw Error('No verified USD red events were returned; prior calendar retained');
+ mergeCalendar(events);
+ sourceType=kind;
+ for(const e of events)if(e.date>=$('rangeStart').value&&e.date<=$('rangeEnd').value)picked.add(e.date);
+ refreshCalendar();
+ statusNews(events.length+' red-event record(s) added; '+calendarEvents.length+' unique saved events, '+NEWS.length+' unique dates overall. The dates in range are excluded by default. Review checkboxes.');
+}
+function restoreSavedCalendar(){
+ try{
+  const saved=JSON.parse(localStorage.getItem(CALENDAR_KEY)||'[]');
+  if(Array.isArray(saved))calendarEvents=saved.filter(e=>e&&/^\\d{4}-\\d{2}-\\d{2}$/.test(e.date)&&typeof e.title==='string').slice(0,50000);
+ }catch(e){calendarEvents=[];}
+ if(calendarEvents.length){sourceType='import';refreshCalendar();}
 }
 function rangeValid(){const a=$('rangeStart').value,b=$('rangeEnd').value;if(!a||!b||a>b){statusNews('Choose a valid From/To date range.',true);return false;}return true;}
 $('scanNews').onclick=async()=>{
@@ -170,20 +200,54 @@ $('scanNews').onclick=async()=>{
 };
 $('excludeFound').onclick=()=>{if(!rangeValid())return;for(const [d] of NEWS)if(d>=$('rangeStart').value&&d<=$('rangeEnd').value)picked.add(d);showNews();rerender()};
 $('clearNews').onclick=()=>{if(!rangeValid())return;picked=new Set([...picked].filter(d=>d<$('rangeStart').value||d>$('rangeEnd').value));showNews();rerender()};
+async function readCalendarFile(file){
+ if(file.size>5*1024*1024)throw Error('File '+file.name+' exceeds 5MB');
+ const content=await file.text(),ext=file.name.toLowerCase();
+ let obj;
+ if(ext.endsWith('.json')){
+  obj=JSON.parse(content);
+  if(!Array.isArray(obj))obj=obj.events||obj.data||obj.calendar;
+ }else if(ext.endsWith('.xml')){
+  const xml=new DOMParser().parseFromString(content,'application/xml');
+  if(xml.querySelector('parsererror'))throw Error('Invalid XML');
+  obj=[...xml.querySelectorAll('event')].map(e=>({
+   date:e.querySelector('date')?.textContent||'',
+   currency:e.querySelector('country')?.textContent||e.querySelector('currency')?.textContent||'',
+   impact:e.querySelector('impact')?.textContent||'',
+   title:e.querySelector('title')?.textContent||e.querySelector('event')?.textContent||''
+  }));
+ }else if(ext.endsWith('.csv'))obj=parseCSV(content);
+ else throw Error('Unsupported file type');
+ if(!Array.isArray(obj))throw Error('No calendar event rows');
+ return normalizeImported(obj);
+}
 $('newsImport').onchange=async e=>{
- const file=e.target.files?.[0];if(!file)return;if(!rangeValid())return;
- try{let obj,content=await file.text();if(file.name.toLowerCase().endsWith('.json')){obj=JSON.parse(content);if(!Array.isArray(obj))obj=obj.events||obj.data||obj.calendar;}
- else if(file.name.toLowerCase().endsWith('.xml')){
-  const xml=new DOMParser().parseFromString(content,'application/xml');if(xml.querySelector('parsererror'))throw Error('Invalid calendar XML');
-  obj=[...xml.querySelectorAll('event')].map(e=>({date:e.querySelector('date')?.textContent||'',currency:e.querySelector('country')?.textContent||e.querySelector('currency')?.textContent||'',impact:e.querySelector('impact')?.textContent||'',title:e.querySelector('title')?.textContent||''}));
- }else obj=parseCSV(content);if(!Array.isArray(obj))throw Error('No calendar event rows found');
- applyNewsEvents(normalizeImported(obj),'import');
- }catch(err){statusNews('Calendar import error: '+err.message+'. Exclusions unchanged.',true);}
+ const files=[...e.target.files||[]];if(!files.length)return;
+ const input=e.target;input.disabled=true;
+ try{
+  let incoming=[],errors=[];
+  for(const f of files){
+   try{const rows=await readCalendarFile(f);if(!rows.length)errors.push(f.name+': no explicit USD high-impact events');else incoming.push(...rows);}
+   catch(err){errors.push(f.name+': '+err.message);}
+  }
+  if(!incoming.length)throw Error(errors.join(' | ')||'No verified USD high-impact events');
+  const prior=calendarEvents.length;
+  applyNewsEvents(incoming,'import');
+  const added=calendarEvents.length-prior;
+  statusNews(files.length+' file(s) read; '+incoming.length+' qualifying rows; '+added+' new unique events. '+calendarEvents.length+' total saved events across '+NEWS.length+' dates.'+(errors.length?' Files to review: '+errors.join(' | '):''),errors.length>0);
+ }catch(err){statusNews('Import failed: '+err.message+'. Existing exclusions unchanged.',true);}
+ finally{input.disabled=false;input.value='';}
+};
+$('clearSavedNews').onclick=()=>{
+ if(!confirm('Clear the locally saved news calendar and its exclusions?'))return;
+ calendarEvents=[];NEWS=[];picked.clear();sourceType='import';
+ try{localStorage.removeItem(CALENDAR_KEY)}catch(e){}
+ refreshCalendar();statusNews('Saved news calendar cleared. Import weekly calendar files to rebuild it.');
 };
 for(const id of ['rangeStart','rangeEnd'])$(id).addEventListener('change',()=>{if(!rangeValid())return;showNews();rerender()});
 function tab(v){document.querySelectorAll('section[id^="tab-"]').forEach(x=>x.classList.toggle('hidden',x.id!=='tab-'+v));document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x.dataset.tab===v));window.scrollTo?.(0,0)}
 for(let b of document.querySelectorAll('[data-tab]'))b.onclick=()=>tab(b.dataset.tab);for(let b of document.querySelectorAll('[data-goto]'))b.onclick=()=>tab(b.dataset.goto);
 function parseCSV(text){let output=[],r=[],c='',quoted=false;for(let i=0;i<text.length;i++){let x=text[i];if(x==='\"'){if(quoted&&text[i+1]==='\"'){c+='\"';i++}else quoted=!quoted;}else if(x===','&&!quoted){r.push(c);c='';}else if((x==='\n'||x==='\r')&&!quoted){if(x==='\r'&&text[i+1]==='\n')i++;r.push(c);if(r.some(z=>z.trim()))output.push(r);r=[];c='';}else c+=x;}if(c||r.length){r.push(c);output.push(r)}const keys=(output.shift()||[]).map(z=>z.trim().replace(/^\uFEFF/,''));return output.map(row=>Object.fromEntries(keys.map((k,i)=>[k,row[i]||''])))}
-$('upload').onchange=async ev=>{const f=ev.target.files?.[0];if(!f)return;try{if(f.size>15*1024*1024)throw Error('File exceeds 15 MB local import limit');const rows=parseCSV(await f.text());if(rows.length>60000)throw Error('Maximum 60,000 trades per file');if(!rows.length||!rows.every(r=>r['Entry time']&&r['Exit time']&&r.Profit!==undefined&&Number(r.Qty)>0&&Number(r['Entry price'])>0&&Number(r['Exit price'])>0))throw Error('Expected NinjaTrader Trades CSV with valid entry/exit, Qty and Profit columns');const base=Math.max(1,Math.floor(Number(prompt('What was the base MNQ quantity for this backtest?','1'))||1));const cap=Math.max(base,Math.floor(Number(prompt('What maximum MNQ position was set?','8'))||8));DATASETS.push({name:f.name.replace(/\.csv$/i,'').slice(0,85)+' · '+base+' × '+(cap/base),base,cap,target:10,spacing:10,rows});$('dataset').innerHTML=DATASETS.map((d,i)=>'<option value="'+i+'">'+safeText(d.name)+'</option>').join('');$('dataset').value=String(DATASETS.length-1);const importedDates=rows.map(r=>dateOf(r['Entry time'])).filter(d=>/^\d{4}-\d{2}-\d{2}$/.test(d)).sort();if(importedDates.length){$('rangeStart').value=importedDates[0];$('rangeEnd').value=importedDates[importedDates.length-1];}picked.clear();showNews();setDataset();$('uploadNote').textContent='Loaded '+rows.length+' rows locally. Nothing was uploaded. Check the P&L reconciliation below.';}catch(err){$('uploadNote').textContent='Import error: '+err.message;}};
-$('dataset').innerHTML='<option value="">Import your first NT8 trade file</option>';$('dataset').onchange=setDataset;$('clearMyData').onclick=()=>{DATASETS.length=0;$('dataset').innerHTML='<option value="">Import your first NT8 trade file</option>';$('upload').value='';$('uploadNote').textContent='Your imported trade records have been cleared from this browser session.';renderEmpty();};$('sizeMode').onchange=()=>{explainSizing();rerender()};for(let id of ['base','cap','account','headroom'])$(id).addEventListener('input',()=>{if(id==='account')return;rerender()});$('account').onchange=()=>{$('headroom').value=LIMITS[Number($('account').value)];explainSizing();rerender()};showNews();setDataset();
+$('upload').onchange=async ev=>{const f=ev.target.files?.[0];if(!f)return;try{if(f.size>15*1024*1024)throw Error('File exceeds 15 MB local import limit');const rows=parseCSV(await f.text());if(rows.length>60000)throw Error('Maximum 60,000 trades per file');if(!rows.length||!rows.every(r=>r['Entry time']&&r['Exit time']&&r.Profit!==undefined&&Number(r.Qty)>0&&Number(r['Entry price'])>0&&Number(r['Exit price'])>0))throw Error('Expected NinjaTrader Trades CSV with valid entry/exit, Qty and Profit columns');const base=Math.max(1,Math.floor(Number(prompt('What was the base MNQ quantity for this backtest?','1'))||1));const cap=Math.max(base,Math.floor(Number(prompt('What maximum MNQ position was set?','8'))||8));DATASETS.push({name:f.name.replace(/\.csv$/i,'').slice(0,85)+' · '+base+' × '+(cap/base),base,cap,target:10,spacing:10,rows});$('dataset').innerHTML=DATASETS.map((d,i)=>'<option value="'+i+'">'+safeText(d.name)+'</option>').join('');$('dataset').value=String(DATASETS.length-1);const importedDates=rows.map(r=>dateOf(r['Entry time'])).filter(d=>/^\d{4}-\d{2}-\d{2}$/.test(d)).sort();if(importedDates.length){$('rangeStart').value=importedDates[0];$('rangeEnd').value=importedDates[importedDates.length-1];}picked.clear();restoreSavedCalendar();refreshCalendar();setDataset();$('uploadNote').textContent='Loaded '+rows.length+' rows locally. Nothing was uploaded. Check the P&L reconciliation below.';}catch(err){$('uploadNote').textContent='Import error: '+err.message;}};
+$('dataset').innerHTML='<option value="">Import your first NT8 trade file</option>';$('dataset').onchange=setDataset;$('clearMyData').onclick=()=>{DATASETS.length=0;$('dataset').innerHTML='<option value="">Import your first NT8 trade file</option>';$('upload').value='';$('uploadNote').textContent='Your imported trade records have been cleared from this browser session.';renderEmpty();};$('sizeMode').onchange=()=>{explainSizing();rerender()};for(let id of ['base','cap','account','headroom'])$(id).addEventListener('input',()=>{if(id==='account')return;rerender()});$('account').onchange=()=>{$('headroom').value=LIMITS[Number($('account').value)];explainSizing();rerender()};restoreSavedCalendar();refreshCalendar();setDataset();
 </script></body></html>
