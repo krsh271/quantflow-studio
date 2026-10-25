@@ -131,19 +131,34 @@ function showNews(){
 }
 function statusNews(message,error=false){$('scanStatus').className='info'+(error?' warning':'');$('scanStatus').textContent=message;}
 function isoDate(s){
- let x=String(s||'').trim();if(/^\d{4}-\d{2}-\d{2}/.test(x))return x.slice(0,10);
- let m=x.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);if(m)return m[3]+'-'+m[2].padStart(2,'0')+'-'+m[1].padStart(2,'0');
- const dt=new Date(x);return Number.isNaN(dt.getTime())?'':dt.toISOString().slice(0,10);
+ const x=String(s||'').trim();if(!x)return '';
+ if(/^\d{4}-\d{2}-\d{2}/.test(x))return x.slice(0,10);
+ const m=x.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})/);
+ if(m){
+  let first=+m[1],second=+m[2],year=+m[3];
+  // Forex Factory's official weekly CSV uses MM-DD-YYYY, e.g. 10-28-2026.
+  // Slash dates from EU calendar files can be DD/MM/YYYY; if ambiguous, prefer month-first,
+  // as with the Forex Factory source. Reject invalid calendar dates explicitly.
+  let month=first,day=second;
+  if(first>12&&second<=12){month=second;day=first;}
+  const dt=new Date(Date.UTC(year,month-1,day));
+  if(dt.getUTCFullYear()!==year||dt.getUTCMonth()!==month-1||dt.getUTCDate()!==day)return '';
+  return year+'-'+String(month).padStart(2,'0')+'-'+String(day).padStart(2,'0');
+ }
+ const d=new Date(x);return Number.isNaN(d.getTime())?'':d.toISOString().slice(0,10);
 }
+function canonicalKey(k){return String(k||'').replace(/^\uFEFF/,'').toLowerCase().replace(/[^a-z0-9]/g,'');}
+function getColumn(r,...names){const keys=Object.keys(r);for(const name of names){const k=keys.find(t=>canonicalKey(t)===canonicalKey(name));if(k!==undefined&&r[k]!==undefined&&String(r[k]).trim()!=='')return r[k];}return '';}
+function highImpact(value){const x=String(value??'').toLowerCase().trim();return /^(high|red|3|high impact expected|high impact|red folder|impact red|impact-high|impact_red|impact-high expected)$/.test(x)||/high\s+impact|impact\s*[-_: ]\s*red|red\s*folder/.test(x);}
 function normalizeImported(events){
  if(!Array.isArray(events))throw Error('Calendar must contain an array of event records');
  let rows=[];
  for(const row of events){
-  const date=isoDate(row.date||row.Date||row.datetime||row.dateTime||row.timestamp);
-  const currency=String(row.currency||row.Currency||'').trim().toUpperCase();
-  const impact=String(row.impact||row.Impact||row.impactLevel||row.impact_name||'').toLowerCase().trim();
-  if(currency!=='USD'||!['high','high impact','high impact expected','red','red folder','3'].includes(impact)||!date)continue;
-  rows.push({date,title:String(row.title||row.Title||row.event||row.Event||row.name||'USD red event').slice(0,150)});
+  const date=isoDate(getColumn(row,'date','datetime','dateTime','date_time','timestamp','start','eventDate'));
+  const currency=String(getColumn(row,'currency','country','ccy')).trim().toUpperCase();
+  const impact=getColumn(row,'impact','impactLevel','impact_name','impactTitle','impactScore','importance','volatility');
+  if(currency!=='USD'||!highImpact(impact)||!date)continue;
+  rows.push({date,title:String(getColumn(row,'title','event','event title','eventTitle','description','name')||'USD red event').slice(0,150)});
  }
  return rows;
 }
@@ -227,14 +242,16 @@ $('newsImport').onchange=async e=>{
  try{
   let incoming=[],errors=[];
   for(const f of files){
-   try{const rows=await readCalendarFile(f);if(!rows.length)errors.push(f.name+': no explicit USD high-impact events');else incoming.push(...rows);}
+   try{const rows=await readCalendarFile(f);if(!rows.length)errors.push(f.name+': no matching USD red events found. Please share a sample of this CSV so its exact column format can be checked.');else incoming.push(...rows);}
    catch(err){errors.push(f.name+': '+err.message);}
   }
   if(!incoming.length)throw Error(errors.join(' | ')||'No verified USD high-impact events');
   const prior=calendarEvents.length;
   applyNewsEvents(incoming,'import');
   const added=calendarEvents.length-prior;
-  statusNews(files.length+' file(s) read; '+incoming.length+' qualifying rows; '+added+' new unique events. '+calendarEvents.length+' total saved events across '+NEWS.length+' dates.'+(errors.length?' Files to review: '+errors.join(' | '):''),errors.length>0);
+  const within=calendarEvents.filter(r=>r.date>=$('rangeStart').value&&r.date<=$('rangeEnd').value);
+  const periodNote=within.length ? (' '+within.length+' event(s) fall within your selected date range.') : (' None are within the selected '+$('rangeStart').value+' to '+$('rangeEnd').value+' range. Change the range to match the CSV week to see its events.');
+  statusNews(files.length+' file(s) read; '+incoming.length+' qualifying rows; '+added+' new unique events. '+calendarEvents.length+' saved events across '+NEWS.length+' dates.'+periodNote+(errors.length?' Files to review: '+errors.join(' | '):''),errors.length>0);
  }catch(err){statusNews('Import failed: '+err.message+'. Existing exclusions unchanged.',true);}
  finally{input.disabled=false;input.value='';}
 };
@@ -247,7 +264,21 @@ $('clearSavedNews').onclick=()=>{
 for(const id of ['rangeStart','rangeEnd'])$(id).addEventListener('change',()=>{if(!rangeValid())return;showNews();rerender()});
 function tab(v){document.querySelectorAll('section[id^="tab-"]').forEach(x=>x.classList.toggle('hidden',x.id!=='tab-'+v));document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x.dataset.tab===v));window.scrollTo?.(0,0)}
 for(let b of document.querySelectorAll('[data-tab]'))b.onclick=()=>tab(b.dataset.tab);for(let b of document.querySelectorAll('[data-goto]'))b.onclick=()=>tab(b.dataset.goto);
-function parseCSV(text){let output=[],r=[],c='',quoted=false;for(let i=0;i<text.length;i++){let x=text[i];if(x==='\"'){if(quoted&&text[i+1]==='\"'){c+='\"';i++}else quoted=!quoted;}else if(x===','&&!quoted){r.push(c);c='';}else if((x==='\n'||x==='\r')&&!quoted){if(x==='\r'&&text[i+1]==='\n')i++;r.push(c);if(r.some(z=>z.trim()))output.push(r);r=[];c='';}else c+=x;}if(c||r.length){r.push(c);output.push(r)}const keys=(output.shift()||[]).map(z=>z.trim().replace(/^\uFEFF/,''));return output.map(row=>Object.fromEntries(keys.map((k,i)=>[k,row[i]||''])))}
+function parseCSV(text){
+ const firstLine=String(text).replace(/^\uFEFF/,'').split(/\r?\n/).find(l=>l.trim())||'';
+ const count=ch=>{let q=false,n=0;for(let i=0;i<firstLine.length;i++){if(firstLine[i]==='"'){if(q&&firstLine[i+1]==='"')i++;else q=!q;}else if(!q&&firstLine[i]===ch)n++;}return n;};
+ const delim=[[',',count(',')],[';',count(';')],['\t',count('\t')]].sort((a,b)=>b[1]-a[1])[0][0];
+ let output=[],r=[],c='',quoted=false;
+ for(let i=0;i<text.length;i++){
+  const x=text[i];if(x==='"'){if(quoted&&text[i+1]==='"'){c+='"';i++;}else quoted=!quoted;}
+  else if(x===delim&&!quoted){r.push(c);c='';}
+  else if((x==='\n'||x==='\r')&&!quoted){if(x==='\r'&&text[i+1]==='\n')i++;r.push(c);if(r.some(z=>z.trim()))output.push(r);r=[];c='';}
+  else c+=x;
+ }
+ if(c||r.length){r.push(c);output.push(r);}
+ const keys=(output.shift()||[]).map(z=>z.trim().replace(/^\uFEFF/,''));
+ return output.map(row=>Object.fromEntries(keys.map((k,i)=>[k,row[i]||''])));
+}
 $('upload').onchange=async ev=>{const f=ev.target.files?.[0];if(!f)return;try{if(f.size>15*1024*1024)throw Error('File exceeds 15 MB local import limit');const rows=parseCSV(await f.text());if(rows.length>60000)throw Error('Maximum 60,000 trades per file');if(!rows.length||!rows.every(r=>r['Entry time']&&r['Exit time']&&r.Profit!==undefined&&Number(r.Qty)>0&&Number(r['Entry price'])>0&&Number(r['Exit price'])>0))throw Error('Expected NinjaTrader Trades CSV with valid entry/exit, Qty and Profit columns');const base=Math.max(1,Math.floor(Number(prompt('What was the base MNQ quantity for this backtest?','1'))||1));const cap=Math.max(base,Math.floor(Number(prompt('What maximum MNQ position was set?','8'))||8));DATASETS.push({name:f.name.replace(/\.csv$/i,'').slice(0,85)+' · '+base+' × '+(cap/base),base,cap,target:10,spacing:10,rows});$('dataset').innerHTML=DATASETS.map((d,i)=>'<option value="'+i+'">'+safeText(d.name)+'</option>').join('');$('dataset').value=String(DATASETS.length-1);const importedDates=rows.map(r=>dateOf(r['Entry time'])).filter(d=>/^\d{4}-\d{2}-\d{2}$/.test(d)).sort();if(importedDates.length){$('rangeStart').value=importedDates[0];$('rangeEnd').value=importedDates[importedDates.length-1];}picked.clear();restoreSavedCalendar();refreshCalendar();setDataset();$('uploadNote').textContent='Loaded '+rows.length+' rows locally. Nothing was uploaded. Check the P&L reconciliation below.';}catch(err){$('uploadNote').textContent='Import error: '+err.message;}};
 $('dataset').innerHTML='<option value="">Import your first NT8 trade file</option>';$('dataset').onchange=setDataset;$('clearMyData').onclick=()=>{DATASETS.length=0;$('dataset').innerHTML='<option value="">Import your first NT8 trade file</option>';$('upload').value='';$('uploadNote').textContent='Your imported trade records have been cleared from this browser session.';renderEmpty();};$('sizeMode').onchange=()=>{explainSizing();rerender()};for(let id of ['base','cap','account','headroom'])$(id).addEventListener('input',()=>{if(id==='account')return;rerender()});$('account').onchange=()=>{$('headroom').value=LIMITS[Number($('account').value)];explainSizing();rerender()};restoreSavedCalendar();refreshCalendar();setDataset();
 </script></body></html>
